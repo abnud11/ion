@@ -279,7 +279,7 @@ export interface SvelteKitArgs extends SsrSiteArgs {
  *
  * Deploy a SvelteKit app that's in the project root.
  *
- * ```js
+ * ```js title="sst.config.ts"
  * new sst.aws.SvelteKit("MyWeb");
  * ```
  *
@@ -287,7 +287,7 @@ export interface SvelteKitArgs extends SsrSiteArgs {
  *
  * Deploys the SvelteKit app in the `my-svelte-app/` directory.
  *
- * ```js {2}
+ * ```js {2} title="sst.config.ts"
  * new sst.aws.SvelteKit("MyWeb", {
  *   path: "my-svelte-app/"
  * });
@@ -297,7 +297,7 @@ export interface SvelteKitArgs extends SsrSiteArgs {
  *
  * Set a custom domain for your SvelteKit app.
  *
- * ```js {2}
+ * ```js {2} title="sst.config.ts"
  * new sst.aws.SvelteKit("MyWeb", {
  *   domain: "my-app.com"
  * });
@@ -307,7 +307,7 @@ export interface SvelteKitArgs extends SsrSiteArgs {
  *
  * Redirect `www.my-app.com` to `my-app.com`.
  *
- * ```js {4}
+ * ```js {4} title="sst.config.ts"
  * new sst.aws.SvelteKit("MyWeb", {
  *   domain: {
  *     name: "my-app.com",
@@ -321,7 +321,7 @@ export interface SvelteKitArgs extends SsrSiteArgs {
  * [Link resources](/docs/linking/) to your SvelteKit app. This will grant permissions
  * to the resources and allow you to access it in your app.
  *
- * ```ts {4}
+ * ```ts {4} title="sst.config.ts"
  * const bucket = new sst.aws.Bucket("MyBucket");
  *
  * new sst.aws.SvelteKit("MyWeb", {
@@ -439,7 +439,7 @@ export class SvelteKit extends Component implements Link.Linkable {
           if (appDir && appPath && appPath.endsWith(appDir)) {
             basePath = appPath.substring(0, appPath.length - appDir.length);
           }
-        } catch (e) { }
+        } catch (e) {}
 
         return {
           basePath,
@@ -483,11 +483,11 @@ export class SvelteKit extends Component implements Link.Linkable {
             },
             copyFiles: buildMeta.serverFiles
               ? [
-                {
-                  from: path.join(outputPath, buildMeta.serverFiles),
-                  to: "prerendered",
-                },
-              ]
+                  {
+                    from: path.join(outputPath, buildMeta.serverFiles),
+                    to: "prerendered",
+                  },
+                ]
               : undefined,
           };
 
@@ -503,17 +503,17 @@ export class SvelteKit extends Component implements Link.Linkable {
             },
             edgeFunctions: edge
               ? {
-                server: { function: serverConfig },
-              }
+                  server: { function: serverConfig },
+                }
               : undefined,
             origins: {
               ...(edge
                 ? {}
                 : {
-                  server: {
-                    server: { function: serverConfig },
-                  },
-                }),
+                    server: {
+                      server: { function: serverConfig },
+                    },
+                  }),
               s3: {
                 s3: {
                   copy: [
@@ -535,16 +535,16 @@ export class SvelteKit extends Component implements Link.Linkable {
             behaviors: [
               edge
                 ? {
-                  cacheType: "server",
-                  cfFunction: "serverCfFunction",
-                  edgeFunction: "server",
-                  origin: "s3",
-                }
+                    cacheType: "server",
+                    cfFunction: "serverCfFunction",
+                    edgeFunction: "server",
+                    origin: "s3",
+                  }
                 : {
-                  cacheType: "server",
-                  cfFunction: "serverCfFunction",
-                  origin: "server",
-                },
+                    cacheType: "server",
+                    cfFunction: "serverCfFunction",
+                    origin: "server",
+                  },
               ...buildMeta.staticRoutes.map(
                 (route) =>
                   ({
@@ -598,8 +598,7 @@ export class SvelteKit extends Component implements Link.Linkable {
   public getSSTLink() {
     return {
       properties: {
-        url:
-          this.url?.apply((url) => url || URL_UNAVAILABLE) || URL_UNAVAILABLE,
+        url: output(this.url).apply((url) => url || URL_UNAVAILABLE),
       },
     };
   }

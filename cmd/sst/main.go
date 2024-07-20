@@ -77,7 +77,6 @@ func run() error {
 	}()
 	c, err := cli.New(ctx, cancel, root, version)
 	if err != nil {
-		c.PrintHelp()
 		return err
 	}
 	spin := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
@@ -224,22 +223,6 @@ var root = &cli.Command{
 			},
 		},
 		{
-			Name: "y",
-			Type: "bool",
-			Description: cli.Description{
-				Short: "Skip interactive confirmation",
-				Long: strings.Join([]string{
-					"",
-					"Skip interactive confirmation for detected framework.",
-					"",
-					"```bash",
-					"sst init -y",
-					"```",
-					"",
-				}, "\n"),
-			},
-		},
-		{
 			Name: "help",
 			Type: "bool",
 			Description: cli.Description{
@@ -269,9 +252,25 @@ var root = &cli.Command{
 					"Initialize a new project in the current directory. This will create a `sst.config.ts` and `sst install` your providers.",
 					"",
 					"If this is run in a Next.js, Remix, Astro, or SvelteKit project, it'll init SST in drop-in mode.",
+					"",
+					"To skip the interactive confirmation after detecting the framework.",
+					"",
+					"```bash frame=\"none\"",
+					"sst init --yes",
+					"```",
 				}, "\n"),
 			},
 			Run: CmdInit,
+			Flags: []cli.Flag{
+				{
+					Name: "yes",
+					Type: "bool",
+					Description: cli.Description{
+						Short: "Skip interactive confirmation",
+						Long:  "Skip interactive confirmation for detected framework.",
+					},
+				},
+			},
 		},
 		{
 			Name:   "mosaic",
@@ -424,7 +423,7 @@ var root = &cli.Command{
 				if c.String("target") != "" {
 					target = strings.Split(c.String("target"), ",")
 				}
-				err = p.Stack.Run(c.Context, &project.StackInput{
+				err = p.Run(c.Context, &project.StackInput{
 					Command: "deploy",
 					OnEvent: ui.StackEvent,
 					Target:  target,
@@ -1040,7 +1039,7 @@ var root = &cli.Command{
 				if c.String("target") != "" {
 					target = strings.Split(c.String("target"), ",")
 				}
-				err = p.Stack.Run(c.Context, &project.StackInput{
+				err = p.Run(c.Context, &project.StackInput{
 					Command: "remove",
 					OnEvent: ui.StackEvent,
 					Target:  target,
@@ -1070,7 +1069,7 @@ var root = &cli.Command{
 				}
 				defer p.Cleanup()
 
-				err = p.Stack.Cancel()
+				err = p.Cancel()
 				if err != nil {
 					return err
 				}
@@ -1170,69 +1169,6 @@ var root = &cli.Command{
 			},
 		},
 		{
-			Name:   "import-unstable",
-			Hidden: true,
-			Description: cli.Description{
-				Short: "(unstable)Import existing resource",
-			},
-			Args: []cli.Argument{
-				{
-					Name:     "type",
-					Required: true,
-					Description: cli.Description{
-						Short: "The type of the resource",
-					},
-				},
-				{
-					Name:     "name",
-					Required: true,
-					Description: cli.Description{
-						Short: "The name of the resource",
-					},
-				},
-				{
-					Name:     "id",
-					Required: true,
-					Description: cli.Description{
-						Short: "The id of the resource",
-					},
-				},
-			},
-			Flags: []cli.Flag{
-				{
-					Type: "string",
-					Name: "parent",
-					Description: cli.Description{
-						Short: "The parent resource",
-					},
-				},
-			},
-			Run: func(c *cli.Cli) error {
-				resourceType := c.Positional(0)
-				name := c.Positional(1)
-				id := c.Positional(2)
-				parent := c.String("parent")
-
-				p, err := c.InitProject()
-				if err != nil {
-					return err
-				}
-				defer p.Cleanup()
-
-				err = p.Stack.Import(c.Context, &project.ImportOptions{
-					Type:   resourceType,
-					Name:   name,
-					ID:     id,
-					Parent: parent,
-				})
-				if err != nil {
-					return err
-				}
-
-				return nil
-			},
-		},
-		{
 			Name:   "server",
 			Hidden: true,
 			Run: func(c *cli.Cli) error {
@@ -1317,7 +1253,7 @@ var root = &cli.Command{
 				if c.String("target") != "" {
 					target = strings.Split(c.String("target"), ",")
 				}
-				err = p.Stack.Run(c.Context, &project.StackInput{
+				err = p.Run(c.Context, &project.StackInput{
 					Command: "refresh",
 					OnEvent: ui.StackEvent,
 					Target:  target,
@@ -1351,17 +1287,17 @@ var root = &cli.Command{
 						parsed.Version = version
 						parsed.UpdateID = cuid2.Generate()
 						parsed.TimeStarted = time.Now().UTC().Format(time.RFC3339)
-						err = p.Stack.Lock(parsed.UpdateID, "edit")
+						err = p.Lock(parsed.UpdateID, "edit")
 						if err != nil {
 							return util.NewReadableError(err, "Could not lock state")
 						}
-						defer p.Stack.Unlock()
+						defer p.Unlock()
 						defer func() {
 							parsed.TimeCompleted = time.Now().UTC().Format(time.RFC3339)
 							provider.PutSummary(p.Backend(), p.App().Name, p.App().Stage, parsed.UpdateID, parsed)
 						}()
 
-						path, err := p.Stack.PullState()
+						path, err := p.PullState()
 						if err != nil {
 							return util.NewReadableError(err, "Could not pull state")
 						}
@@ -1380,7 +1316,7 @@ var root = &cli.Command{
 							return util.NewReadableError(err, "Editor exited with error")
 						}
 
-						return p.Stack.PushState(parsed.UpdateID)
+						return p.PushState(parsed.UpdateID)
 					},
 				},
 			},

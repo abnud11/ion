@@ -134,22 +134,6 @@ sst [command] --verbose
 
 </Segment>
 
-### y
-<Segment>
-<Section type="parameters">
-<InlineSection>
-**Type** <code class="primitive">boolean</code>
-</InlineSection>
-</Section>
-
-Skip interactive confirmation for detected framework.
-
-```bash
-sst init -y
-```
-
-</Segment>
-
 ### help
 <Segment>
 <Section type="parameters">
@@ -179,9 +163,21 @@ sst --help
 sst init
 ```
 </Section>
+
+<Section type="parameters">
+#### Flags
+- <p><code class="key">yes</code> <code class="primitive">boolean</code></p>
+Skip interactive confirmation for detected framework.
+</Section>
 Initialize a new project in the current directory. This will create a `sst.config.ts` and `sst install` your providers.
 
 If this is run in a Next.js, Remix, Astro, or SvelteKit project, it'll init SST in drop-in mode.
+
+To skip the interactive confirmation after detecting the framework.
+
+```bash frame="none"
+sst init --yes
+```
 </Segment>
 
 ### dev

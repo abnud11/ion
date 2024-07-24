@@ -190,6 +190,21 @@ export interface FunctionArgs {
    */
   live?: Input<false>;
   /**
+   * The name for the function. This is displayed in the AWS Console.
+   *
+   * :::note
+   * Changing the name will create a new function and delete the old one.
+   * :::
+   *
+   * @example
+   * ```js
+   * {
+   *   name: ""
+   * }
+   * ```
+   */
+  name?: Input<string>;
+  /**
    * A description for the function. This is displayed in the AWS Console.
    * @example
    * ```js
@@ -414,22 +429,36 @@ export interface FunctionArgs {
   injections?: Input<string[]>;
   /**
    * Configure the function logs in CloudWatch.
-   * @default `{retention: "forever"}`
-   * @example
-   * ```js
-   * {
-   *   logging: {
-   *     retention: "1 week"
-   *   }
-   * }
-   * ```
+   * @default `{retention: "forever", format: "text"}`
    */
   logging?: Input<{
     /**
      * The duration the function logs are kept in CloudWatch.
      * @default `forever`
+     * @example
+     * ```js
+     * {
+     *   logging: {
+     *     retention: "1 week"
+     *   }
+     * }
+     * ```
      */
     retention?: Input<keyof typeof RETENTION>;
+    /**
+     * The [log format](https://docs.aws.amazon.com/lambda/latest/dg/monitoring-cloudwatchlogs-advanced.html)
+     * of the Lambda function.
+     * @default `"text"`
+     * @example
+     * ```js
+     * {
+     *   logging: {
+     *     format: "json"
+     *   }
+     * }
+     * ```
+     */
+    format?: Input<"text" | "json">;
   }>;
   /**
    * The [architecture](https://docs.aws.amazon.com/lambda/latest/dg/foundation-arch.html)
@@ -512,7 +541,7 @@ export interface FunctionArgs {
          * ```js
          * {
          *   url: {
-         *     cors: true
+         *     cors: false
          *   }
          * }
          * ```
@@ -1022,6 +1051,7 @@ export class Function extends Component implements Link.Linkable {
       return output(args.logging).apply((logging) => ({
         ...logging,
         retention: logging?.retention ?? "forever",
+        format: logging?.format ?? "text",
       }));
     }
 
@@ -1389,6 +1419,7 @@ export class Function extends Component implements Link.Linkable {
 
     function createFunction() {
       const transformed = transform(args.transform?.function, {
+        name: args.name,
         description: all([args.description, dev]).apply(([description, dev]) =>
           dev
             ? description
@@ -1409,7 +1440,9 @@ export class Function extends Component implements Link.Linkable {
         },
         architectures,
         loggingConfig: {
-          logFormat: "Text",
+          logFormat: logging.apply((logging) =>
+            logging.format === "json" ? "JSON" : "Text",
+          ),
           logGroup: logGroup.name,
         },
         vpcConfig: args.vpc && {

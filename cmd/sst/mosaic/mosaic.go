@@ -12,12 +12,13 @@ import (
 	"github.com/sst/ion/cmd/sst/cli"
 	"github.com/sst/ion/cmd/sst/mosaic/aws"
 	"github.com/sst/ion/cmd/sst/mosaic/bus"
+	"github.com/sst/ion/cmd/sst/mosaic/cloudflare"
 	"github.com/sst/ion/cmd/sst/mosaic/deployer"
-	"github.com/sst/ion/cmd/sst/mosaic/multiplexer2"
+	"github.com/sst/ion/cmd/sst/mosaic/multiplexer"
 	"github.com/sst/ion/cmd/sst/mosaic/server"
+	"github.com/sst/ion/cmd/sst/mosaic/socket"
 	"github.com/sst/ion/cmd/sst/mosaic/watcher"
 	"github.com/sst/ion/pkg/project"
-	"github.com/sst/ion/pkg/server/dev/cloudflare"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -80,6 +81,7 @@ func CmdMosaic(c *cli.Cli) error {
 	if err != nil {
 		return err
 	}
+	os.Setenv("SST_STAGE", p.App().Stage)
 	slog.Info("mosaic", "project", p.PathRoot())
 
 	wg.Go(func() error {
@@ -91,6 +93,14 @@ func CmdMosaic(c *cli.Cli) error {
 	if err != nil {
 		return err
 	}
+
+	wg.Go(func() error {
+		defer c.Cancel()
+		socket.Start(c.Context, p, server)
+		return nil
+	})
+
+	os.Setenv("SST_SERVER", fmt.Sprintf("http://localhost:%v", server.Port))
 	for name, a := range p.App().Providers {
 		args := a
 		switch name {
@@ -100,11 +110,10 @@ func CmdMosaic(c *cli.Cli) error {
 				return aws.Start(c.Context, p, server, args.(map[string]interface{}))
 			})
 		case "cloudflare":
-			cleanup, err := cloudflare.Start(c.Context, p, args.(map[string]interface{}))
-			if err != nil {
-				return err
-			}
-			defer cleanup()
+			wg.Go(func() error {
+				defer c.Cancel()
+				return cloudflare.Start(c.Context, p, args.(map[string]interface{}))
+			})
 		}
 	}
 	wg.Go(func() error {
@@ -113,51 +122,60 @@ func CmdMosaic(c *cli.Cli) error {
 	})
 
 	currentExecutable, _ := os.Executable()
-	multi := multiplexer.New(c.Context)
-	multiEnv := []string{
-		fmt.Sprintf("SST_SERVER=http://localhost:%v", server.Port),
-		"SST_STAGE=" + p.App().Stage,
-	}
-	multi.AddProcess("deploy", []string{currentExecutable, "mosaic-deploy"}, "⑆", "SST", "", false, multiEnv...)
-	wg.Go(func() error {
-		defer c.Cancel()
-		multi.Start()
-		return nil
-	})
 
-	wg.Go(func() error {
-		evts := bus.Subscribe(&project.CompleteEvent{})
-		defer c.Cancel()
-		for {
-			select {
-			case <-c.Context.Done():
-				return nil
-			case unknown := <-evts:
-				switch evt := unknown.(type) {
-				case *project.CompleteEvent:
-					for _, d := range evt.Devs {
-						if d.Command == "" {
-							continue
+	if !c.Bool("simple") {
+		multi := multiplexer.New(c.Context)
+		multiEnv := []string{
+			fmt.Sprintf("SST_SERVER=http://localhost:%v", server.Port),
+			"SST_STAGE=" + p.App().Stage,
+		}
+		multi.AddProcess("deploy", []string{currentExecutable, "ui", "--filter=sst"}, "⑆", "SST", "", false, multiEnv...)
+		multi.AddProcess("function", []string{currentExecutable, "ui", "--filter=function"}, "𝝺", "Function", "", false, multiEnv...)
+		wg.Go(func() error {
+			defer c.Cancel()
+			multi.Start()
+			return nil
+		})
+		wg.Go(func() error {
+			evts := bus.Subscribe(&project.CompleteEvent{})
+			defer c.Cancel()
+			for {
+				select {
+				case <-c.Context.Done():
+					return nil
+				case unknown := <-evts:
+					switch evt := unknown.(type) {
+					case *project.CompleteEvent:
+						for _, d := range evt.Devs {
+							if d.Command == "" {
+								continue
+							}
+							dir := filepath.Join(cwd, d.Directory)
+							slog.Info("mosaic", "dev", d.Name, "directory", dir)
+							multi.AddProcess(
+								d.Name,
+								append([]string{currentExecutable, "mosaic", "--"},
+									strings.Split(d.Command, " ")...),
+								// 𝝺 λ
+								"→",
+								d.Name,
+								dir,
+								true,
+								multiEnv...,
+							)
 						}
-						dir := filepath.Join(cwd, d.Directory)
-						slog.Info("mosaic", "dev", d.Name, "directory", dir)
-						multi.AddProcess(
-							d.Name,
-							append([]string{currentExecutable, "mosaic", "--"},
-								strings.Split(d.Command, " ")...),
-							// 𝝺 λ
-							"→",
-							d.Name,
-							dir,
-							true,
-							multiEnv...,
-						)
+						break
 					}
-					break
 				}
 			}
-		}
-	})
+		})
+	}
+
+	if c.Bool("simple") {
+		wg.Go(func() error {
+			return CmdUI(c)
+		})
+	}
 
 	wg.Go(func() error {
 		defer c.Cancel()

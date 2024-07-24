@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/events"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
+	"github.com/pulumi/pulumi/sdk/v3/go/auto/optpreview"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optrefresh"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optup"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -42,6 +44,7 @@ type BuildFailedEvent struct {
 
 type StackInput struct {
 	OnEvent func(event *StackEvent)
+	Out     chan interface{}
 	OnFiles func(files []string)
 	Command string
 	Target  []string
@@ -120,6 +123,9 @@ type ImportDiff struct {
 }
 
 type StackCommandEvent struct {
+	App     string
+	Stage   string
+	Config  string
 	Command string
 }
 
@@ -137,21 +143,39 @@ var ErrPassphraseInvalid = fmt.Errorf("passphrase invalid")
 func (p *Project) Run(ctx context.Context, input *StackInput) error {
 	slog.Info("running stack command", "cmd", input.Command)
 
-	updateID := cuid2.Generate()
-	err := p.Lock(updateID, input.Command)
-	if err != nil {
-		if err == provider.ErrLockExists {
-			input.OnEvent(&StackEvent{ConcurrentUpdateEvent: &ConcurrentUpdateEvent{}})
+	publish := func(evt any) {
+		if input.Out != nil {
+			input.Out <- evt
 		}
-		return err
 	}
-	defer p.Unlock()
 
 	input.OnEvent(&StackEvent{StackCommandEvent: &StackCommandEvent{
+		App:     p.app.Name,
+		Stage:   p.app.Stage,
+		Config:  p.PathConfig(),
 		Command: input.Command,
 	}})
+	publish(&StackCommandEvent{
+		App:     p.app.Name,
+		Stage:   p.app.Stage,
+		Config:  p.PathConfig(),
+		Command: input.Command,
+	})
 
-	_, err = p.PullState()
+	updateID := cuid2.Generate()
+	if input.Command != "diff" {
+		err := p.Lock(updateID, input.Command)
+		if err != nil {
+			if err == provider.ErrLockExists {
+				input.OnEvent(&StackEvent{ConcurrentUpdateEvent: &ConcurrentUpdateEvent{}})
+				publish(&ConcurrentUpdateEvent{})
+			}
+			return err
+		}
+		defer p.Unlock()
+	}
+
+	_, err := p.PullState()
 	if err != nil {
 		if errors.Is(err, provider.ErrStateNotFound) {
 			if input.Command != "deploy" {
@@ -161,13 +185,14 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 			return err
 		}
 	}
-	defer p.PushState(updateID)
+	if input.Command != "diff" {
+		defer p.PushState(updateID)
+	}
 
 	passphrase, err := provider.Passphrase(p.home, p.app.Name, p.app.Stage)
 	if err != nil {
 		return err
 	}
-
 	secrets, err := provider.GetSecrets(p.home, p.app.Name, p.app.Stage)
 	if err != nil {
 		return ErrPassphraseInvalid
@@ -240,6 +265,9 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 				Error: err.Error(),
 			},
 		})
+		publish(&BuildFailedEvent{
+			Error: err.Error(),
+		})
 		return err
 	}
 	defer js.Cleanup(buildResult)
@@ -310,6 +338,7 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 		input.OnEvent(&StackEvent{
 			OldCompleteEvent: completed,
 		})
+		publish(completed)
 	}()
 
 	config := auto.ConfigMap{}
@@ -387,6 +416,9 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 				}
 
 				input.OnEvent(&StackEvent{EngineEvent: event})
+				for _, field := range getNotNilFields(event) {
+					publish(field)
+				}
 
 				if event.SummaryEvent != nil {
 					finished = true
@@ -403,7 +435,9 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 	}()
 
 	defer func() {
-		complete, err := getCompletedEvent(ctx, stack)
+		slog.Info("parsing state")
+		defer slog.Info("done parsing state")
+		complete, err := getCompletedEvent(context.Background(), stack)
 		if err != nil {
 			return
 		}
@@ -411,6 +445,10 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 		complete.Errors = errors
 		complete.ImportDiffs = importDiffs
 		defer input.OnEvent(&StackEvent{CompleteEvent: complete})
+		defer publish(complete)
+		if input.Command == "diff" {
+			return
+		}
 
 		cloudflareBindings := map[string]string{}
 		for _, resource := range complete.Resources {
@@ -440,6 +478,11 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 				}
 			}
 		}
+
+		outputsFilePath := filepath.Join(p.PathWorkingDir(), "outputs.json")
+		outputsFile, _ := os.Create(outputsFilePath)
+		defer outputsFile.Close()
+		json.NewEncoder(outputsFile).Encode(complete.Outputs)
 
 		typesFileName := "sst-env.d.ts"
 		typesFilePath := filepath.Join(p.PathRoot(), typesFileName)
@@ -480,9 +523,15 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 
 			if receiver.Cloudflare != nil {
 				if rel == typesFileName {
+					nonCloudflareLinks := map[string]interface{}{}
+					for _, link := range receiver.Links {
+						if cloudflareBindings[link] == "" {
+							nonCloudflareLinks[link] = complete.Links[link]
+						}
+					}
 					file.WriteString("import \"sst\"\n")
 					file.WriteString("declare module \"sst\" {\n")
-					file.WriteString("  export interface Resource " + inferTypes(complete.Links, "  ") + "\n")
+					file.WriteString("  export interface Resource " + inferTypes(nonCloudflareLinks, "  ") + "\n")
 					file.WriteString("}" + "\n")
 				}
 				bindings := map[string]interface{}{}
@@ -507,6 +556,9 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 	slog.Info("running stack command", "cmd", input.Command)
 	var summary auto.UpdateSummary
 	defer func() {
+		if input.Command == "diff" {
+			return
+		}
 		var parsed provider.Summary
 		parsed.Version = p.Version()
 		parsed.UpdateID = updateID
@@ -535,7 +587,6 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 				Message: err.Message,
 			})
 		}
-
 		provider.PutSummary(p.home, p.app.Name, p.app.Stage, updateID, parsed)
 	}()
 
@@ -572,6 +623,15 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 		)
 		err = derr
 		summary = result.Summary
+	case "diff":
+		_, derr := stack.Preview(ctx,
+			optpreview.Diff(),
+			optpreview.Target(input.Target),
+			optpreview.ProgressStreams(),
+			optpreview.ErrorProgressStreams(),
+			optpreview.EventStreams(stream),
+		)
+		err = derr
 	}
 
 	slog.Info("done running stack command")
@@ -580,6 +640,10 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 		return ErrStackRunFailed
 	}
 	return nil
+}
+
+type PreviewInput struct {
+	Out chan interface{}
 }
 
 type ImportOptions struct {
@@ -599,7 +663,6 @@ func (s *Project) Unlock() error {
 	if err != nil {
 		return err
 	}
-
 	for _, file := range files {
 		if strings.HasPrefix(file.Name(), "Pulumi") {
 			err := os.Remove(filepath.Join(dir, file.Name()))
@@ -608,7 +671,6 @@ func (s *Project) Unlock() error {
 			}
 		}
 	}
-
 	return provider.Unlock(s.home, s.app.Name, s.app.Stage)
 }
 
@@ -693,7 +755,6 @@ func getCompletedEvent(ctx context.Context, stack auto.Stack) (*CompleteEvent, e
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("stack command complete")
 	var deployment apitype.DeploymentV3
 	json.Unmarshal(exported.Deployment, &deployment)
 	complete := &CompleteEvent{
@@ -755,4 +816,32 @@ func getCompletedEvent(ctx context.Context, stack auto.Stack) (*CompleteEvent, e
 	}
 
 	return complete, nil
+}
+
+func getNotNilFields(v interface{}) []interface{} {
+	result := []interface{}{}
+	val := reflect.ValueOf(v)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+	if val.Kind() != reflect.Struct {
+		result = append(result, v)
+		return result
+	}
+
+	for i := 0; i < val.NumField(); i++ {
+		field := val.Field(i)
+		switch field.Kind() {
+		case reflect.Struct:
+			result = append(result, getNotNilFields(field.Interface())...)
+			break
+		case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+			if !field.IsNil() {
+				result = append(result, field.Interface())
+			}
+			break
+		}
+	}
+
+	return result
 }

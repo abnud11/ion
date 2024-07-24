@@ -21,7 +21,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/sst/ion/cmd/sst/cli"
 	"github.com/sst/ion/cmd/sst/mosaic"
-	"github.com/sst/ion/cmd/sst/ui"
+	"github.com/sst/ion/cmd/sst/mosaic/ui"
 	"github.com/sst/ion/internal/util"
 	"github.com/sst/ion/pkg/global"
 	"github.com/sst/ion/pkg/project"
@@ -33,6 +33,22 @@ import (
 var version = "dev"
 
 func main() {
+	// check if node_modules/.bin/sst exists
+	nodeModulesBinPath := filepath.Join("node_modules", ".bin", "sst")
+	if _, err := os.Stat(nodeModulesBinPath); err == nil && os.Getenv("npm_config_user_agent") == "" && os.Getenv("SST_SKIP_LOCAL") != "true" && version != "dev" {
+		// forward command to node_modules/.bin/sst
+		fmt.Println(ui.TEXT_WARNING_BOLD.Render("Warning: ") + "You are using a global installation of SST but you also have a local installation specified in your package.json. The local installation will be used but you should typically run it through your package manager.")
+		cmd := exec.Command(nodeModulesBinPath, os.Args[1:]...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		cmd.Env = os.Environ()
+		cmd.Env = append(cmd.Env, "SST_SKIP_LOCAL=true")
+		if err := cmd.Run(); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	telemetry.SetVersion(version)
 	defer telemetry.Close()
 	telemetry.Track("cli.start", map[string]interface{}{
@@ -273,14 +289,34 @@ var root = &cli.Command{
 			},
 		},
 		{
-			Name:   "mosaic",
+			Name: "mosaic",
+			Flags: []cli.Flag{
+				{
+					Name: "simple",
+					Type: "bool",
+					Description: cli.Description{
+						Short: "Run in simple mode",
+						Long:  "Run in simple mode.",
+					},
+				},
+			},
 			Hidden: true,
 			Run:    mosaic.CmdMosaic,
 		},
 		{
-			Name:   "mosaic-deploy",
+			Name:   "ui",
 			Hidden: true,
-			Run:    mosaic.CmdMosaicDeploy,
+			Run:    mosaic.CmdUI,
+			Flags: []cli.Flag{
+				{
+					Name: "filter",
+					Type: "string",
+					Description: cli.Description{
+						Short: "Filter events",
+						Long:  "Filter events.",
+					},
+				},
+			},
 		},
 		{
 			Name: "dev",
@@ -409,30 +445,42 @@ var root = &cli.Command{
 					},
 				},
 			},
-			Run: func(c *cli.Cli) error {
-				p, err := c.InitProject()
-				if err != nil {
-					return err
-				}
-				defer p.Cleanup()
-
-				ui := ui.New(c.Context, ui.ProgressModeDeploy)
-				defer ui.Destroy()
-				ui.Header(version, p.App().Name, p.App().Stage)
-				target := []string{}
-				if c.String("target") != "" {
-					target = strings.Split(c.String("target"), ",")
-				}
-				err = p.Run(c.Context, &project.StackInput{
-					Command: "deploy",
-					OnEvent: ui.StackEvent,
-					Target:  target,
-				})
-				if err != nil {
-					return err
-				}
-				return nil
+			Run: CmdDeploy,
+		},
+		{
+			Name: "diff",
+			Description: cli.Description{
+				Short: "See what changes will be made",
+				Long:  strings.Join([]string{}, "\n"),
 			},
+			Flags: []cli.Flag{
+				{
+					Name: "target",
+					Description: cli.Description{
+						Short: "Comma seperated list of target URNs",
+						Long:  "Comma seperated list of target URNs.",
+					},
+				},
+				{
+					Name: "dev",
+					Type: "bool",
+					Description: cli.Description{
+						Short: "Compare to sst dev",
+						Long: strings.Join([]string{
+							"Compare to sst dev",
+						}, "\n"),
+					},
+				},
+			},
+			Examples: []cli.Example{
+				{
+					Content: "sst diff --stage production",
+					Description: cli.Description{
+						Short: "See changes to production",
+					},
+				},
+			},
+			Run: CmdDiff,
 		},
 		{
 			Name: "add",
@@ -1026,29 +1074,7 @@ var root = &cli.Command{
 					},
 				},
 			},
-			Run: func(c *cli.Cli) error {
-				p, err := c.InitProject()
-				if err != nil {
-					return err
-				}
-				defer p.Cleanup()
-				ui := ui.New(c.Context, ui.ProgressModeRemove)
-				defer ui.Destroy()
-				ui.Header(version, p.App().Name, p.App().Stage)
-				target := []string{}
-				if c.String("target") != "" {
-					target = strings.Split(c.String("target"), ",")
-				}
-				err = p.Run(c.Context, &project.StackInput{
-					Command: "remove",
-					OnEvent: ui.StackEvent,
-					Target:  target,
-				})
-				if err != nil {
-					return err
-				}
-				return nil
-			},
+			Run: CmdRemove,
 		},
 		{
 			Name: "unlock",
@@ -1111,25 +1137,7 @@ var root = &cli.Command{
 					},
 				},
 			},
-			Run: func(cli *cli.Cli) error {
-				newVersion, err := global.Upgrade(
-					version,
-					cli.Positional(0),
-				)
-				if err != nil {
-					return err
-				}
-				newVersion = strings.TrimPrefix(newVersion, "v")
-
-				color.New(color.FgGreen, color.Bold).Print(ui.IconCheck)
-				if newVersion == version {
-					color.New(color.FgWhite).Printf("  Already on latest %s\n", version)
-				} else {
-					color.New(color.FgWhite).Printf("  Upgraded %s ➜ ", version)
-					color.New(color.FgCyan, color.Bold).Println(newVersion)
-				}
-				return nil
-			},
+			Run: CmdUpgrade,
 		},
 		{
 			Name: "telemetry", Description: cli.Description{
@@ -1240,29 +1248,7 @@ var root = &cli.Command{
 					},
 				},
 			},
-			Run: func(c *cli.Cli) error {
-				p, err := c.InitProject()
-				if err != nil {
-					return err
-				}
-				defer p.Cleanup()
-				ui := ui.New(c.Context, ui.ProgressModeRefresh)
-				defer ui.Destroy()
-				ui.Header(version, p.App().Name, p.App().Stage)
-				target := []string{}
-				if c.String("target") != "" {
-					target = strings.Split(c.String("target"), ",")
-				}
-				err = p.Run(c.Context, &project.StackInput{
-					Command: "refresh",
-					OnEvent: ui.StackEvent,
-					Target:  target,
-				})
-				if err != nil {
-					return err
-				}
-				return nil
-			},
+			Run: CmdRefresh,
 		},
 		{
 			Name:   "state",
@@ -1305,7 +1291,9 @@ var root = &cli.Command{
 						if editor == "" {
 							editor = "vim"
 						}
-						cmd := exec.Command(editor, path)
+						editorArgs := append(strings.Fields(editor), path)
+						fmt.Println(editorArgs)
+						cmd := exec.Command(editorArgs[0], editorArgs[1:]...)
 						cmd.Stdin = os.Stdin
 						cmd.Stdout = os.Stdout
 						cmd.Stderr = os.Stderr

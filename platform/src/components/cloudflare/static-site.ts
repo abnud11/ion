@@ -262,7 +262,7 @@ export class StaticSite extends Component implements Link.Linkable {
     this.router = worker;
 
     this.registerOutputs({
-      ...cleanup(this.url as Output<string>, sitePath, environment),
+      ...cleanup(sitePath, environment, this.url as Output<string>),
       _metadata: {
         path: sitePath,
         environment,
@@ -271,10 +271,17 @@ export class StaticSite extends Component implements Link.Linkable {
     });
 
     function createKvStorage() {
-      return new Kv(`${name}Assets`, transform(args.transform?.assets, {}), {
-        parent,
-        retainOnDelete: false,
-      });
+      return new Kv(
+        ...transform(
+          args.transform?.assets,
+          `${name}Assets`,
+          {},
+          {
+            parent,
+            retainOnDelete: false,
+          },
+        ),
+      );
     }
 
     function generateAssetManifest() {

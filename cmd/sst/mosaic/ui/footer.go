@@ -168,10 +168,10 @@ func (m *footer) Update(msg any) {
 		if msg.Metadata.New != nil && msg.Metadata.New.Parent != "" {
 			m.parents[msg.Metadata.URN] = msg.Metadata.New.Parent
 		}
-		if msg.Metadata.Op == apitype.OpSame {
+		if msg.Metadata.Op == apitype.OpSame || msg.Metadata.Op == apitype.OpRead {
 			m.skipped++
 		}
-		if msg.Metadata.Op != apitype.OpSame {
+		if msg.Metadata.Op != apitype.OpSame && msg.Metadata.Op != apitype.OpRead {
 			m.pending = append(m.pending, msg)
 		}
 	case *apitype.SummaryEvent:
@@ -254,7 +254,8 @@ func (m *footer) View(width int) string {
 		}
 	}
 	if m.skipped > 0 {
-		label = fmt.Sprintf("%-11s [%d skipped]", label, m.skipped)
+		label = fmt.Sprintf("%-11s", label)
+		label += TEXT_DIM.Render(fmt.Sprintf(" %d skipped", m.skipped))
 	}
 	result = append(result, spinner+"  "+label)
 	return lipgloss.NewStyle().Width(width).Render(lipgloss.JoinVertical(lipgloss.Top, result...))

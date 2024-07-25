@@ -162,6 +162,12 @@ export interface PostgresArgs {
   };
 }
 
+interface PostgresRef {
+  ref: boolean;
+  cluster: rds.Cluster;
+  instance: rds.ClusterInstance;
+}
+
 /**
  * The `Postgres` component lets you add a Postgres database to your app using
  * [Amazon Aurora Serverless v2](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-serverless-v2.html).
@@ -228,7 +234,6 @@ export interface PostgresArgs {
 export class Postgres extends Component implements Link.Linkable {
   private cluster: rds.Cluster;
   private instance: rds.ClusterInstance;
-  private databaseName: Output<string>;
 
   constructor(
     name: string,
@@ -236,6 +241,13 @@ export class Postgres extends Component implements Link.Linkable {
     opts?: ComponentResourceOptions,
   ) {
     super(__pulumiType, name, args, opts);
+
+    if (args && "ref" in args) {
+      const ref = args as PostgresRef;
+      this.cluster = ref.cluster;
+      this.instance = ref.instance;
+      return;
+    }
 
     const parent = this;
     const scaling = normalizeScaling();
@@ -248,7 +260,6 @@ export class Postgres extends Component implements Link.Linkable {
 
     this.cluster = cluster;
     this.instance = instance;
-    this.databaseName = databaseName;
 
     function normalizeScaling() {
       return output(args?.scaling).apply((scaling) => ({
@@ -271,129 +282,58 @@ export class Postgres extends Component implements Link.Linkable {
       if (!args?.vpc) return;
 
       return new rds.SubnetGroup(
-        `${name}SubnetGroup`,
-        transform(args?.transform?.subnetGroup, {
-          subnetIds: output(args.vpc).privateSubnets,
-        }),
-        { parent },
+        ...transform(
+          args?.transform?.subnetGroup,
+          `${name}SubnetGroup`,
+          {
+            subnetIds: output(args.vpc).privateSubnets,
+          },
+          { parent },
+        ),
       );
     }
 
     function createCluster() {
       return new rds.Cluster(
-        `${name}Cluster`,
-        transform(args?.transform?.cluster, {
-          engine: rds.EngineType.AuroraPostgresql,
-          engineMode: "provisioned",
-          engineVersion: version,
-          databaseName,
-          masterUsername: "postgres",
-          manageMasterUserPassword: true,
-          serverlessv2ScalingConfiguration: scaling,
-          skipFinalSnapshot: true,
-          enableHttpEndpoint: true,
-          dbSubnetGroupName: subnetGroup?.name,
-          vpcSecurityGroupIds: args?.vpc && output(args.vpc).securityGroups,
-        }),
-        { parent },
+        ...transform(
+          args?.transform?.cluster,
+          `${name}Cluster`,
+          {
+            engine: rds.EngineType.AuroraPostgresql,
+            engineMode: "provisioned",
+            engineVersion: version,
+            databaseName,
+            masterUsername: "postgres",
+            manageMasterUserPassword: true,
+            serverlessv2ScalingConfiguration: scaling,
+            skipFinalSnapshot: true,
+            enableHttpEndpoint: true,
+            dbSubnetGroupName: subnetGroup?.name,
+            vpcSecurityGroupIds: args?.vpc && output(args.vpc).securityGroups,
+          },
+          { parent },
+        ),
       );
     }
 
     function createInstance() {
       return new rds.ClusterInstance(
-        `${name}Instance`,
-        transform(args?.transform?.instance, {
-          clusterIdentifier: cluster.id,
-          instanceClass: "db.serverless",
-          engine: rds.EngineType.AuroraPostgresql,
-          engineVersion: cluster.engineVersion,
-          dbSubnetGroupName: subnetGroup?.name,
-        }),
-        { parent },
+        ...transform(
+          args?.transform?.instance,
+          `${name}Instance`,
+          {
+            clusterIdentifier: cluster.id,
+            instanceClass: "db.serverless",
+            engine: rds.EngineType.AuroraPostgresql,
+            engineVersion: cluster.engineVersion,
+            dbSubnetGroupName: subnetGroup?.name,
+          },
+          { parent },
+        ),
       );
     }
   }
 
-  /**
-   * The ARN of the RDS Cluster.
-   */
-  public get clusterArn() {
-    return this.cluster.arn;
-  }
-
-  /**
-   * The ARN of the master user secret.
-   */
-  public get secretArn() {
-    return this.cluster.masterUserSecrets[0].secretArn;
-  }
-
-  /**
-   * The name of the database.
-   */
-  public get database() {
-    return this.databaseName;
-  }
-
-  public get nodes() {
-    return {
-      cluster: this.cluster,
-      instance: this.instance,
-    };
-  }
-
-  /** @internal */
-  public getSSTLink() {
-    return getSSTLink(this.cluster);
-  }
-
-  /** @internal */
-  public static get(
-    name: string,
-    args: rds.GetClusterArgs,
-    opts?: ComponentResourceOptions,
-  ) {
-    return new PostgresRef(name, args, opts);
-  }
-}
-
-function getSSTLink(cluster: rds.Cluster | Output<rds.GetClusterResult>) {
-  return {
-    properties: {
-      clusterArn: cluster.arn,
-      secretArn: cluster.masterUserSecrets[0].secretArn,
-      database: cluster.databaseName,
-    },
-    include: [
-      permission({
-        actions: ["secretsmanager:GetSecretValue"],
-        resources: [cluster.masterUserSecrets[0].secretArn],
-      }),
-      permission({
-        actions: [
-          "rds-data:BatchExecuteStatement",
-          "rds-data:BeginTransaction",
-          "rds-data:CommitTransaction",
-          "rds-data:ExecuteStatement",
-          "rds-data:RollbackTransaction",
-        ],
-        resources: [cluster.arn],
-      }),
-    ],
-  };
-}
-
-class PostgresRef extends Component implements Link.Linkable {
-  private cluster: Output<rds.GetClusterResult>;
-
-  constructor(
-    name: string,
-    args: rds.GetClusterOutputArgs,
-    opts?: ComponentResourceOptions,
-  ) {
-    super(__pulumiType + "Ref", name, args, opts);
-    this.cluster = rds.getClusterOutput(args, opts);
-  }
   /**
    * The ARN of the RDS Cluster.
    */
@@ -415,9 +355,73 @@ class PostgresRef extends Component implements Link.Linkable {
     return this.cluster.databaseName;
   }
 
+  public get nodes() {
+    return {
+      cluster: this.cluster,
+      instance: this.instance,
+    };
+  }
+
   /** @internal */
   public getSSTLink() {
-    return getSSTLink(this.cluster);
+    return {
+      properties: {
+        clusterArn: this.cluster.arn,
+        secretArn: this.cluster.masterUserSecrets[0].secretArn,
+        database: this.cluster.databaseName,
+      },
+      include: [
+        permission({
+          actions: ["secretsmanager:GetSecretValue"],
+          resources: [this.cluster.masterUserSecrets[0].secretArn],
+        }),
+        permission({
+          actions: [
+            "rds-data:BatchExecuteStatement",
+            "rds-data:BeginTransaction",
+            "rds-data:CommitTransaction",
+            "rds-data:ExecuteStatement",
+            "rds-data:RollbackTransaction",
+          ],
+          resources: [this.cluster.arn],
+        }),
+      ],
+    };
+  }
+
+  /**
+   * Reference an existing Postgres cluster with the given cluster name. This is useful
+   * when you created a cluster in one stage and you want to reference it in another stage.
+   *
+   * @param name The name of the component.
+   * @param clusterName The name of the RDS cluster.
+   *
+   * @example
+   * Imagine you created a cluster in the `dev` stage. And in your perosonal stage, ie. `frank`,
+   * instead of creating a new cluster, you want to reuse the same cluster from `dev`.
+   *
+   * ```ts title="sst.config.ts"
+   * const database = $app.stage === "frank"
+   *   ? sst.aws.Postgres.get("MyDatabase", "app-dev-mydatabase")
+   *   ? new sst.aws.Postgres("MyDatabase");
+   * ```
+   *
+   * Here `app-dev-mydatabase` is the name of the cluster created in the `dev` stage.
+   */
+  public static get(name: string, clusterName: Input<string>) {
+    const cluster = rds.Cluster.get(`${name}Cluster`, clusterName);
+    const instances = rds.getInstancesOutput({
+      filters: [{ name: "db-cluster-id", values: [cluster.id] }],
+    });
+    const instance = rds.ClusterInstance.get(
+      `${name}Instance`,
+      instances.apply((instances) => {
+        if (instances.instanceIdentifiers.length === 0)
+          throw new Error(`No instance found for cluster ${clusterName}`);
+        return instances.instanceIdentifiers[0];
+      }),
+    );
+    return new Postgres(name, { ref: true, cluster, instance } as PostgresArgs);
   }
 }
 

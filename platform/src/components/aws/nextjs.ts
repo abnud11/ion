@@ -719,6 +719,7 @@ export class Nextjs extends Component implements Link.Linkable {
                       bundle: path.join(outputPath, value.bundle),
                       handler: value.handler,
                       ...defaultFunctionProps,
+                      environment: {}
                     },
                   },
                 ],

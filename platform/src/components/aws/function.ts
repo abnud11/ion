@@ -1028,6 +1028,9 @@ export class Function extends Component implements Link.Linkable {
       return all([args.environment, dev, args.link]).apply(
         ([environment, dev]) => {
           const result = environment ?? {};
+          if(name.toLowerCase().includes("edge")){
+            return result;
+          }
           result.SST_RESOURCE_App = JSON.stringify({
             name: $app.name,
             stage: $app.stage,
@@ -1271,7 +1274,7 @@ export class Function extends Component implements Link.Linkable {
           {
             assumeRolePolicy: !$dev
               ? iam.assumeRolePolicyForPrincipal({
-                  Service: "lambda.amazonaws.com",
+                  Service: name.toLowerCase().includes("edge") ? ["lambda.amazonaws.com","edgelambda.amazonaws.com"] : "lambda.amazonaws.com",
                 })
               : iam.getPolicyDocumentOutput({
                   statements: [

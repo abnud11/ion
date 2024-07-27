@@ -449,29 +449,17 @@ function handler(event) {
 
       Object.entries(plan.edgeFunctions ?? {}).forEach(
         ([fnName, { function: props }]) => {
-          // Edge functions don't support linking
-          output(args.link).apply((link) => {
-            if (link?.length)
-              throw new VisibleError(
-                `Resource linking is not currently supported when deploying to the edge.`,
-              );
-          });
-
           const fn = new Function(
             `${name}Edge${sanitizeToPascalCase(fnName)}`,
             {
               runtime: "nodejs20.x",
-              timeout: "20 seconds",
-              memory: "1024 MB",
+              timeout: "5 seconds",
+              memory: "128 MB",
               ...props,
               nodejs: {
                 format: "esm" as const,
                 ...props.nodejs,
               },
-              environment: output(args.environment).apply((environment) => ({
-                ...environment,
-                ...props.environment,
-              })),
               permissions: output(args.permissions).apply((permissions) => [
                 {
                   actions: ["cloudfront:CreateInvalidation"],
@@ -479,10 +467,6 @@ function handler(event) {
                 },
                 ...(permissions ?? []),
                 ...(props.permissions ?? []),
-              ]),
-              link: output(args.link).apply((link) => [
-                ...(props.link ?? []),
-                ...(link ?? []),
               ]),
               transform: {
                 function: (args) => {

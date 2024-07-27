@@ -8,4 +8,5 @@ export * from "./worker";
 export * from "./account-id";
 export * from "./auth";
 export * from "./queue";
+export * from "./next"
 export { binding } from "./binding.js";

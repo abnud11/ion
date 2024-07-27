@@ -25,69 +25,17 @@ import { Queue } from "./queue.js";
 import { buildApp } from "../base/base-ssr-site.js";
 import { dynamodb, lambda } from "@pulumi/aws";
 import { URL_UNAVAILABLE } from "./linkable.js";
-
-const DEFAULT_OPEN_NEXT_VERSION = "3.0.8";
-const DEFAULT_CACHE_POLICY_ALLOWED_HEADERS = ["x-open-next-cache-key"];
-
-type BaseFunction = {
-  handler: string;
-  bundle: string;
-};
-
-type OpenNextFunctionOrigin = {
-  type: "function";
-  streaming?: boolean;
-  wrapper: string;
-  converter: string;
-} & BaseFunction;
-
-type OpenNextServerFunctionOrigin = OpenNextFunctionOrigin & {
-  queue: string;
-  incrementalCache: string;
-  tagCache: string;
-};
-
-type OpenNextImageOptimizationOrigin = OpenNextFunctionOrigin & {
-  imageLoader: string;
-};
-
-type OpenNextS3Origin = {
-  type: "s3";
-  originPath: string;
-  copy: {
-    from: string;
-    to: string;
-    cached: boolean;
-    versionedSubDir?: string;
-  }[];
-};
-
-interface OpenNextOutput {
-  edgeFunctions: {
-    [key: string]: BaseFunction;
-  } & {
-    middleware?: BaseFunction & { pathResolver: string };
-  };
-  origins: {
-    s3: OpenNextS3Origin;
-    default: OpenNextServerFunctionOrigin;
-    imageOptimizer: OpenNextImageOptimizationOrigin;
-  } & {
-    [key: string]: OpenNextServerFunctionOrigin | OpenNextS3Origin;
-  };
-  behaviors: {
-    pattern: string;
-    origin?: string;
-    edgeFunction?: string;
-  }[];
-  additionalProps?: {
-    disableIncrementalCache?: boolean;
-    disableTagCache?: boolean;
-    initializationFunction?: BaseFunction;
-    warmer?: BaseFunction;
-    revalidationFunction?: BaseFunction;
-  };
-}
+import {  
+  DEFAULT_CACHE_POLICY_ALLOWED_HEADERS, 
+  OpenNextImageOptimizationOrigin, 
+  OpenNextOutput, 
+  OpenNextS3Origin, 
+  OpenNextServerFunctionOrigin,
+  loadBuildId,
+  loadOpenNextOutput,
+  loadPrerenderManifest,
+  normalizeBuildCommand,
+} from "../base/base-next";
 
 export interface NextjsArgs extends SsrSiteArgs {
   /**
@@ -495,7 +443,7 @@ export class Nextjs extends Component implements Link.Linkable {
     >;
 
     const parent = this;
-    const buildCommand = normalizeBuildCommand();
+    const buildCommand = normalizeBuildCommand(args.buildCommand, args.openNextVersion);
     const { sitePath, partition, region } = prepare(args, opts);
     if ($dev) {
       const server = createDevServer(parent, name, args);
@@ -581,67 +529,20 @@ export class Nextjs extends Component implements Link.Linkable {
       },
     });
 
-    function normalizeBuildCommand() {
-      return all([args?.buildCommand, args?.openNextVersion]).apply(
-        ([buildCommand, openNextVersion]) =>
-          buildCommand ??
-          [
-            "npx",
-            "--yes",
-            `open-next@${openNextVersion ?? DEFAULT_OPEN_NEXT_VERSION}`,
-            "build",
-          ].join(" "),
-      );
-    }
-
     function loadBuildOutput() {
       return outputPath.apply((outputPath) => {
-        const openNextOutputPath = path.join(
-          outputPath,
-          ".open-next",
-          "open-next.output.json",
-        );
-        if (!fs.existsSync(openNextOutputPath)) {
-          throw new VisibleError(
-            `Failed to load open-next.output.json from "${openNextOutputPath}".`,
-          );
-        }
-        const content = fs.readFileSync(openNextOutputPath).toString();
-        const json = JSON.parse(content) as OpenNextOutput;
-        // Currently open-next.output.json's initializationFunction value
-        // is wrong, it is set to ".open-next/initialization-function"
-        if (json.additionalProps?.initializationFunction) {
-          json.additionalProps.initializationFunction = {
-            handler: "index.handler",
-            bundle: ".open-next/dynamodb-provider",
-          };
-        }
         return {
-          openNextOutput: json,
-          buildId: loadBuildId(),
+          openNextOutput: loadOpenNextOutput(outputPath),
+          buildId: loadBuildId(outputPath, name),
           routesManifest: loadRoutesManifest(),
           appPathRoutesManifest: loadAppPathRoutesManifest(),
           appPathsManifest: loadAppPathsManifest(),
           pagesManifest: loadPagesManifest(),
-          prerenderManifest: loadPrerenderManifest(),
+          prerenderManifest: loadPrerenderManifest(outputPath),
         };
       });
     }
 
-    function loadBuildId() {
-      return outputPath.apply((outputPath) => {
-        try {
-          return fs
-            .readFileSync(path.join(outputPath, ".next/BUILD_ID"))
-            .toString();
-        } catch (e) {
-          console.error(e);
-          throw new VisibleError(
-            `Failed to read build id from ".next/BUILD_ID" for the "${name}" site.`,
-          );
-        }
-      });
-    }
 
     function loadRoutesManifest() {
       return outputPath.apply((outputPath) => {
@@ -718,23 +619,6 @@ export class Nextjs extends Component implements Link.Linkable {
       });
     }
 
-    function loadPrerenderManifest() {
-      return outputPath.apply((outputPath) => {
-        try {
-          const content = fs
-            .readFileSync(
-              path.join(outputPath, ".next/prerender-manifest.json"),
-            )
-            .toString();
-          return JSON.parse(content) as {
-            version: number;
-            routes: Record<string, unknown>;
-          };
-        } catch (e) {
-          console.debug("Failed to load prerender-manifest.json", e);
-        }
-      });
-    }
 
     function buildPlan() {
       return all([

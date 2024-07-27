@@ -17,7 +17,7 @@ import { DistributionInvalidation } from "./providers/distribution-invalidation.
 import { useProvider } from "./helpers/provider.js";
 import { Bucket, BucketArgs } from "./bucket.js";
 import { BucketFile, BucketFiles } from "./providers/bucket-files.js";
-import { prefixName, sanitizeToPascalCase } from "../naming.js";
+import { sanitizeToPascalCase } from "../naming.js";
 import { Input } from "../input.js";
 import { transform, type Prettify, type Transform } from "../component.js";
 import { VisibleError } from "../error.js";
@@ -33,6 +33,7 @@ import {
   lambda,
   types,
 } from "@pulumi/aws";
+import { DevArgs } from "../dev.js";
 
 type CloudFrontFunctionConfig = { injections: string[] };
 type EdgeFunctionConfig = { function: Unwrap<FunctionArgs> };
@@ -56,7 +57,7 @@ type OriginGroupConfig = {
 };
 
 export type Plan = ReturnType<typeof validatePlan>;
-export interface SsrSiteArgs extends BaseSsrSiteArgs {
+export interface SsrSiteArgs extends BaseSsrSiteArgs, DevArgs {
   domain?: CdnArgs["domain"];
   permissions?: FunctionArgs["permissions"];
   cachePolicy?: Input<string>;
@@ -325,7 +326,6 @@ export function createServersAndDistribution(
     const origins = buildOrigins();
     const originGroups = buildOriginGroups();
     const distribution = createDistribution();
-    allowServerFunctionInvalidateDistribution();
     createDistributionInvalidation();
     createWarmer();
 
@@ -474,7 +474,6 @@ export function createServersAndDistribution(
           functions[fnName] = new cloudfront.Function(
             `${name}CloudfrontFunction${sanitizeToPascalCase(fnName)}`,
             {
-              // name: prefixName(63, `${name}-${sanifnName}`),
               runtime: "cloudfront-js-1.0",
               code: `
 function handler(event) {
@@ -518,6 +517,14 @@ function handler(event) {
                 ...environment,
                 ...props.environment,
               })),
+              permissions: output(args.permissions).apply((permissions) => [
+                {
+                  actions: ["cloudfront:CreateInvalidation"],
+                  resources: ["*"],
+                },
+                ...(permissions ?? []),
+                ...(props.permissions ?? []),
+              ]),
               link: output(args.link).apply((link) => [
                 ...(props.link ?? []),
                 ...(link ?? []),
@@ -617,6 +624,10 @@ function handler(event) {
               ...props.function.environment,
             })),
             permissions: output(args.permissions).apply((permissions) => [
+              {
+                actions: ["cloudfront:CreateInvalidation"],
+                resources: ["*"],
+              },
               ...(permissions ?? []),
               ...(props.function.permissions ?? []),
             ]),
@@ -835,44 +846,6 @@ function handler(event) {
           { dependsOn: bucketFile, parent },
         ),
       );
-    }
-
-    function allowServerFunctionInvalidateDistribution() {
-      const policy = new iam.Policy(
-        `${name}InvalidationPolicy`,
-        {
-          policy: interpolate`{
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Action": "cloudfront:CreateInvalidation",
-                "Effect": "Allow",
-                "Resource": "${distribution.nodes.distribution.arn}"
-              }
-            ]
-          }`,
-        },
-        { parent },
-      );
-
-      for (const fn of [...ssrFunctions, ...Object.values(edgeFunctions)]) {
-        fn.nodes.function.name.apply((functionName) => {
-          const uniqueHash = crypto
-            .createHash("md5")
-            .update(functionName)
-            .digest("hex")
-            .substring(0, 4);
-
-          new iam.RolePolicyAttachment(
-            `${name}InvalidationPolicyAttachment${uniqueHash}`,
-            {
-              policyArn: policy.arn,
-              role: fn.nodes.role!.name,
-            },
-            { parent },
-          );
-        });
-      }
     }
 
     function createWarmer() {

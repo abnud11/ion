@@ -1209,6 +1209,13 @@ var root = &cli.Command{
 			Run: CmdRefresh,
 		},
 		{
+			Name: "preview",
+			Description: cli.Description{
+				Short: "Preview the updates that will be done on the platform",
+			},
+			Run: CmdPreview,
+		},
+		{
 			Name:   "state",
 			Hidden: true,
 			Description: cli.Description{

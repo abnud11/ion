@@ -42,11 +42,12 @@
 
 import * as cloudflare from "@pulumi/cloudflare";
 import { Dns, Record } from "../dns";
-import { sanitizeToPascalCase } from "../naming";
+import { logicalName } from "../naming";
 import { ZoneLookup } from "./providers/zone-lookup";
 import { ComponentResourceOptions, output } from "@pulumi/pulumi";
 import { Transform, transform } from "../component";
 import { Input } from "../input";
+import { DEFAULT_ACCOUNT_ID } from "./account-id";
 
 export interface DnsArgs {
   /**
@@ -99,7 +100,7 @@ export function dns(args: DnsArgs = {}) {
     opts: ComponentResourceOptions,
   ) {
     return output(record).apply((record) => {
-      const nameSuffix = sanitizeToPascalCase(record.name);
+      const nameSuffix = logicalName(record.name);
       const zoneId = lookupZone();
       const dnsRecord = createRecord();
       return dnsRecord;
@@ -110,7 +111,7 @@ export function dns(args: DnsArgs = {}) {
         return new ZoneLookup(
           `${namePrefix}${record.type}ZoneLookup${nameSuffix}`,
           {
-            accountId: sst.cloudflare.DEFAULT_ACCOUNT_ID,
+            accountId: DEFAULT_ACCOUNT_ID,
             domain: output(record.name).apply((name) =>
               name.replace(/\.$/, ""),
             ),
